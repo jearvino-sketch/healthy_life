@@ -4,6 +4,7 @@ param(
     [string]$AliasCsv = '',
     [string]$EvidenceCsv = '',
     [string]$VerificationCsv = '',
+    [string]$SourceCsv = '',
     [string]$CandidateOutput = '',
     [string]$EntityOutput = ''
 )
@@ -13,6 +14,7 @@ $dataDirectory = Join-Path $PSScriptRoot '..\饭店数据'
 if (-not $AliasCsv) { $AliasCsv = Join-Path $dataDirectory '饭店别名词典.csv' }
 if (-not $EvidenceCsv) { $EvidenceCsv = Join-Path $dataDirectory '评论推荐.csv' }
 if (-not $VerificationCsv) { $VerificationCsv = Join-Path $dataDirectory '门店核验.csv' }
+if (-not $SourceCsv) { $SourceCsv = Join-Path $dataDirectory '视频来源.csv' }
 if (-not $CandidateOutput) { $CandidateOutput = Join-Path $dataDirectory '饭店提及候选.csv' }
 if (-not $EntityOutput) { $EntityOutput = Join-Path $dataDirectory '饭店实体精筛.csv' }
 
@@ -51,6 +53,8 @@ function New-Aggregate([string]$Name) {
         Name = $Name
         CommentKeys = New-StringSet
         Videos = New-StringSet
+        Cities = New-StringSet
+        Areas = New-StringSet
         Methods = New-StringSet
         PositiveKeys = New-StringSet
         NegativeKeys = New-StringSet
@@ -66,6 +70,11 @@ function Add-Hit($Aggregate, $Comment, [string]$Method, [bool]$Positive, [bool]$
     $key = [string]$Comment.Key
     [void]$Aggregate.CommentKeys.Add($key)
     [void]$Aggregate.Videos.Add([string]$Comment.Bv)
+    $source = $sourceByBvid[[string]$Comment.Bv]
+    if ($null -ne $source) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$source.城市)) { [void]$Aggregate.Cities.Add([string]$source.城市) }
+        if (-not [string]::IsNullOrWhiteSpace([string]$source.区县或县级市)) { [void]$Aggregate.Areas.Add([string]$source.区县或县级市) }
+    }
     [void]$Aggregate.Methods.Add($Method)
     if ($Positive) { [void]$Aggregate.PositiveKeys.Add($key) }
     if ($Negative) { [void]$Aggregate.NegativeKeys.Add($key) }
@@ -83,12 +92,18 @@ function Add-Hit($Aggregate, $Comment, [string]$Method, [bool]$Positive, [bool]$
 if (-not (Test-Path -LiteralPath $RawDirectory -PathType Container)) {
     throw "原始评论目录不存在：$RawDirectory"
 }
-foreach ($required in @($AliasCsv, $EvidenceCsv, $VerificationCsv)) {
+foreach ($required in @($AliasCsv, $EvidenceCsv, $VerificationCsv, $SourceCsv)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "缺少输入文件：$required" }
 }
 
 $dictionary = @(Import-Csv -LiteralPath $AliasCsv -Encoding UTF8)
 $verification = @(Import-Csv -LiteralPath $VerificationCsv -Encoding UTF8)
+$sourceByBvid = @{}
+foreach ($sourceRow in @(Import-Csv -LiteralPath $SourceCsv -Encoding UTF8)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$sourceRow.BV号)) {
+        $sourceByBvid[[string]$sourceRow.BV号] = $sourceRow
+    }
+}
 $commentsByKey = @{}
 $rawFileCount = 0
 
@@ -212,6 +227,8 @@ $candidateRows = foreach ($aggregate in $candidateAggregates.Values) {
         候选写法 = $aggregate.Name
         提及评论数 = $count
         涉及视频数 = $aggregate.Videos.Count
+        涉及城市 = (($aggregate.Cities | Sort-Object) -join '／')
+        涉及区县或县级市 = (($aggregate.Areas | Sort-Object) -join '／')
         推荐或比较语境数 = $aggregate.PositiveKeys.Count
         负面语境数 = $aggregate.NegativeKeys.Count
         最高点赞数 = $aggregate.MaxLikes
@@ -243,6 +260,8 @@ $entityRows = foreach ($entry in $dictionary) {
         出现写法 = ([string]$entry.别名列表 -replace '\|', '／')
         评论提及数 = $aggregate.CommentKeys.Count
         涉及视频数 = $aggregate.Videos.Count
+        涉及城市 = (($aggregate.Cities | Sort-Object) -join '／')
+        涉及区县或县级市 = (($aggregate.Areas | Sort-Object) -join '／')
         推荐或比较语境数 = $aggregate.PositiveKeys.Count
         负面语境数 = $aggregate.NegativeKeys.Count
         精筛结论 = [string]$entry.精筛结论
