@@ -25,7 +25,31 @@ function Invoke-SearchPage([int]$Page) {
     return $response.data
 }
 
-$first = Invoke-SearchPage -Page 1
+$first = $null
+try {
+    $first = Invoke-SearchPage -Page 1
+}
+catch {
+    if ($_.Exception.Message -match '\b412\b') {
+        $oldRows = @()
+        $oldRuns = @()
+        if (Test-Path -LiteralPath $DiscoveryJson) {
+            $oldDiscovery = Get-Content -LiteralPath $DiscoveryJson -Raw -Encoding UTF8 | ConvertFrom-Json
+            $oldRows = @($oldDiscovery.uniqueRows)
+            $oldRuns = @($oldDiscovery.runs | Where-Object { -not (([string]$_.city -eq $City) -and ([string]$_.area -eq $Area) -and ([string]$_.term -eq $Term)) })
+        }
+        [pscustomobject]@{
+            uniqueRows = $oldRows
+            runs = @($oldRuns + [pscustomobject]@{
+                city = $City; area = $Area; term = $Term
+                lastPageAdvertised = 0; lastPageFetched = 0; rawRows = 0
+                failures = @([pscustomobject]@{ page = 1; reason = $_.Exception.Message })
+                stopReason = 'HTTP 412; stopped without retry'
+            })
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $DiscoveryJson -Encoding UTF8
+    }
+    throw
+}
 $advertisedLastPage = [int]$first.numPages
 if ($advertisedLastPage -lt 1) { throw 'Bilibili search returned no valid page count.' }
 
