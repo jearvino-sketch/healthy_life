@@ -34,6 +34,14 @@ function Get-NameSet($Entity, $AliasRow) {
     return $set
 }
 
+function Convert-ReviewCount([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq '未获取') { return -1L }
+    $normalized = $Value.Trim().Replace(',', '')
+    if ($normalized -match '^(\d+(?:\.\d+)?)万\+$') { return [long]([double]$matches[1] * 10000) }
+    if ($normalized -match '^\d+$') { return [long]$normalized }
+    return -1L
+}
+
 $entities = @(Import-Csv -LiteralPath $entityCsv -Encoding UTF8)
 $aliases = @(Import-Csv -LiteralPath $aliasCsv -Encoding UTF8)
 $verification = @(Import-Csv -LiteralPath $verificationCsv -Encoding UTF8)
@@ -55,13 +63,23 @@ foreach ($entity in $entities) {
     $aliasRow = $aliases | Where-Object 标准店名 -eq $entity.标准店名 | Select-Object -First 1
     $names = Get-NameSet -Entity $entity -AliasRow $aliasRow
     $verifiedRows = @($verification | Where-Object { $names.Contains([string]$_.标准店名) })
+    # 同名多分店时，只采用点评评价数最高且有评分的门店；没有评分时才退回至评价数最高的已核验门店。
+    $ratedRows = @($verifiedRows | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.点评评分) -and [string]$_.点评评分 -ne '未获取'
+    })
+    $displayVerification = @(
+        $(if ($ratedRows.Count) { $ratedRows } else { $verifiedRows }) |
+            Sort-Object @{ Expression = { Convert-ReviewCount ([string]$_.点评评价数) }; Descending = $true },
+                        @{ Expression = { [string]$_.点评核验日 }; Descending = $true } |
+            Select-Object -First 1
+    )
     $historicalEvidence = @($evidence | Where-Object { $names.Contains([string]$_.推荐店名) })
     $semanticRows = @($semantic | Where-Object 标准店名 -eq $entity.标准店名)
     $recommendedRows = @($semanticRows | Where-Object 是否有效推荐 -eq '是')
     $dishSourceRow = $recommendedRows | Sort-Object @{ Expression = { [int]$_.点赞数 }; Descending = $true }, @{ Expression = { ([string]$_.评论文本).Length }; Ascending = $true } | Select-Object -First 1
 
     $dishSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($value in @($verifiedRows | ForEach-Object { $_.点评推荐菜 }) + @($historicalEvidence | ForEach-Object { $_.推荐菜 })) {
+    foreach ($value in @($displayVerification | ForEach-Object { $_.点评推荐菜 }) + @($historicalEvidence | ForEach-Object { $_.推荐菜 })) {
         if ([string]::IsNullOrWhiteSpace([string]$value) -or [string]$value -eq '未获取') { continue }
         foreach ($dish in @(([string]$value) -split '[／/、|]' | Where-Object { $_ })) { [void]$dishSet.Add(([string]$dish).Trim()) }
     }
@@ -79,7 +97,7 @@ foreach ($entity in $entities) {
     }
     $dishes = if ($prunedDishes.Count) { ($prunedDishes -join '／') } else { '评论未明确／待人工补充' }
 
-    $scores = @($verifiedRows | ForEach-Object {
+    $scores = @($displayVerification | ForEach-Object {
         if (-not [string]::IsNullOrWhiteSpace([string]$_.点评评分) -and [string]$_.点评评分 -ne '未获取') {
             $branch = if ([string]::IsNullOrWhiteSpace([string]$_.分店) -or [string]$_.分店 -eq '分店待确认') { '' } else { "$($_.分店)：" }
             "$branch$($_.点评评分)"
@@ -87,7 +105,7 @@ foreach ($entity in $entities) {
     } | Where-Object { $_ } | Sort-Object -Unique)
     $rating = if ($scores.Count) { $scores -join '／' } else { '待平台核验' }
 
-    $perCapitaValues = @($verifiedRows | ForEach-Object {
+    $perCapitaValues = @($displayVerification | ForEach-Object {
         if (-not [string]::IsNullOrWhiteSpace([string]$_.点评人均) -and [string]$_.点评人均 -ne '未获取') {
             $branch = if ([string]::IsNullOrWhiteSpace([string]$_.分店) -or [string]$_.分店 -eq '分店待确认') { '' } else { "$($_.分店)：" }
             "$branch 点评¥$($_.点评人均)".Trim()
@@ -99,7 +117,7 @@ foreach ($entity in $entities) {
     } | Where-Object { $_ } | Sort-Object -Unique)
     $perCapita = if ($perCapitaValues.Count) { $perCapitaValues -join '／' } else { '待平台核验' }
 
-    $locations = @($verifiedRows | ForEach-Object {
+    $locations = @($displayVerification | ForEach-Object {
         $parts = @()
         if (-not [string]::IsNullOrWhiteSpace([string]$_.分店) -and [string]$_.分店 -ne '分店待确认') { $parts += [string]$_.分店 }
         if (-not [string]::IsNullOrWhiteSpace([string]$_.区县)) { $parts += [string]$_.区县 }
@@ -171,9 +189,9 @@ foreach ($entity in $entities) {
 $lines = New-Object 'System.Collections.Generic.List[string]'
 [void]$lines.Add('## 人工确认总表（按地级市）')
 [void]$lines.Add('')
-[void]$lines.Add('表内“评分／人均”只填写已取得的平台值；“待平台核验”表示当前没有可靠数据。置信度用于安排人工复核优先级：高＝至少 3 条有效推荐且已有平台位置，中＝至少 2 条推荐或已有具体位置，低＝仅 1 条推荐或名称有歧义，待确认＝没有有效推荐；括号仅显示有效推荐条数。评论原文优先选择点赞较高的有效推荐；没有有效推荐时保留一条非推荐原文用于排除判断。')
+[void]$lines.Add('表内“评分／人均”只填写已取得的平台值；“待平台核验”表示当前没有可靠数据。同名多分店均有记录时，评分、人均、位置和推荐菜只取点评评价数最多且有评分的门店。置信度用于安排人工复核优先级：高＝至少 3 条有效推荐且已有平台位置，中＝至少 2 条推荐或已有具体位置，低＝仅 1 条推荐或名称有歧义，待确认＝没有有效推荐；括号仅显示有效推荐条数。评论原文优先选择点赞较高的有效推荐；没有有效推荐时保留一条非推荐原文用于排除判断。')
 [void]$lines.Add('')
-foreach ($cityName in @('无锡市', '苏州市', '常州市', '镇江市')) {
+foreach ($cityName in @('无锡市', '苏州市', '常州市', '镇江市', '南京市')) {
     $cityRows = @($rows | Where-Object City -eq $cityName | Sort-Object @{ Expression = 'ConfidenceRank'; Descending = $true }, @{ Expression = 'RecommendationCount'; Descending = $true }, Name)
     [void]$lines.Add("### $cityName（$($cityRows.Count) 家）")
     [void]$lines.Add('')
@@ -216,4 +234,5 @@ $updated = $updated.TrimEnd("`r", "`n") + "`r`n"
     苏州市 = @($rows | Where-Object City -eq '苏州市').Count
     常州市 = @($rows | Where-Object City -eq '常州市').Count
     镇江市 = @($rows | Where-Object City -eq '镇江市').Count
+    南京市 = @($rows | Where-Object City -eq '南京市').Count
 } | Format-List
