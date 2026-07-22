@@ -6,6 +6,7 @@ param(
     [string]$VerificationCsv = '',
     [string]$SourceCsv = '',
     [string]$SemanticRuleCsv = '',
+    [string]$CandidateAuditCsv = '',
     [string]$CandidateOutput = '',
     [string]$EntityOutput = '',
     [string]$SemanticOutput = '',
@@ -20,6 +21,7 @@ if (-not $EvidenceCsv) { $EvidenceCsv = Join-Path $dataDirectory '评论推荐.c
 if (-not $VerificationCsv) { $VerificationCsv = Join-Path $dataDirectory '门店核验.csv' }
 if (-not $SourceCsv) { $SourceCsv = Join-Path $dataDirectory '视频来源.csv' }
 if (-not $SemanticRuleCsv) { $SemanticRuleCsv = Join-Path $dataDirectory '饭店语义规则.csv' }
+if (-not $CandidateAuditCsv) { $CandidateAuditCsv = Join-Path $dataDirectory '饭店候选人工审计.csv' }
 if (-not $CandidateOutput) { $CandidateOutput = Join-Path $dataDirectory '饭店提及候选.csv' }
 if (-not $EntityOutput) { $EntityOutput = Join-Path $dataDirectory '饭店实体精筛.csv' }
 if (-not $SemanticOutput) { $SemanticOutput = Join-Path $dataDirectory '饭店推荐语义标注.csv' }
@@ -70,7 +72,7 @@ function Test-ContainsAny([string]$Text, [string[]]$Terms) {
     return $false
 }
 
-$semanticRecommendCues = @('强烈推荐', '强推', '推荐去', '推荐吃', '我推荐', '建议去', '建议吃', '值得去', '值得吃', '可以去', '可以吃', '可以试试', '安利', '必吃', '首选')
+$semanticRecommendCues = @('强烈推荐', '最推荐', '强推', '推荐去', '推荐吃', '我推荐', '推荐', '建议去', '建议吃', '值得去', '值得吃', '可以去', '可以吃', '可以试试', '安利', '必吃', '首选')
 $semanticPositiveCues = @('很好吃', '真好吃', '好吃', '很不错', '也不错', '确实不错', '确实也不错', '相当可以', '味道很好', '味道不错', '质量在线', '性价比高', '价格实惠', '很实惠', '很喜欢', '喜欢吃', '值得一试', '值得尝尝', '稳定', '正宗', '地道')
 $semanticNegativeCues = @('不推荐', '不好吃', '难吃', '踩雷', '避雷', '劝退', '失望', '太贵', '很贵', '坑人', '不行', '一般', '倒闭', '关门', '关了', '再也不去', '不会再去')
 $semanticComparisonCues = @('还不如', '不如', '比不上', '不及', '还不及')
@@ -95,12 +97,27 @@ function Get-SemanticAssessment([string]$Text, [string[]]$Names) {
     $sentences = @($Text.Split([char[]]"。！？!?；;`r`n", [StringSplitOptions]::RemoveEmptyEntries))
     foreach ($sentence in $sentences) {
         $listScope = $false
+        $sentenceApprovesList = (Test-ContainsAny $sentence @('这几个都可以', '这些都可以', '这几家都可以', '都不错', '都挺好', '都值得试试')) -and -not (Test-ContainsAny $sentence @('都不推荐', '都不好吃', '都不行'))
         $colonIndex = $sentence.IndexOfAny([char[]]'：:')
         if ($colonIndex -ge 0) {
             $prefix = $sentence.Substring(0, $colonIndex)
             $listScope = (Test-ContainsAny $prefix $semanticRecommendCues) -and -not (Test-ContainsAny $prefix @('不推荐', '别去', '不要去'))
         }
         foreach ($clause in @($sentence.Split([char[]]'，,、', [StringSplitOptions]::RemoveEmptyEntries))) {
+            $hasComparison = Test-ContainsAny $clause $semanticComparisonCues
+            $hasIrony = Test-ContainsAny $clause $semanticIronyCues
+            $hasNegative = Test-ContainsAny $clause $semanticNegativeCues
+            if ($clause.Contains('不难吃')) { $hasNegative = $false }
+            $hasDirectRecommendation = Test-ContainsAny $clause $semanticRecommendCues
+            $hasPositiveExperience = Test-ContainsAny $clause $semanticPositiveCues
+            $hasRepeatedBehavior = (Test-ContainsAny $clause $semanticBehaviorCues) -and (Test-ContainsAny $clause $semanticEatingCues)
+            if ($hasNegative -or $hasIrony -or ($hasComparison -and -not $hasDirectRecommendation)) {
+                $listScope = $false
+            }
+            elseif ($hasDirectRecommendation) {
+                $listScope = $true
+            }
+
             $matched = $false
             foreach ($name in $Names) {
                 if (-not [string]::IsNullOrWhiteSpace($name) -and $clause.IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
@@ -110,14 +127,6 @@ function Get-SemanticAssessment([string]$Text, [string[]]$Names) {
             }
             if (-not $matched) { continue }
 
-            $hasComparison = Test-ContainsAny $clause $semanticComparisonCues
-            $hasIrony = Test-ContainsAny $clause $semanticIronyCues
-            $hasNegative = Test-ContainsAny $clause $semanticNegativeCues
-            if ($clause.Contains('不难吃')) { $hasNegative = $false }
-            $hasDirectRecommendation = Test-ContainsAny $clause $semanticRecommendCues
-            $hasPositiveExperience = Test-ContainsAny $clause $semanticPositiveCues
-            $hasRepeatedBehavior = (Test-ContainsAny $clause $semanticBehaviorCues) -and (Test-ContainsAny $clause $semanticEatingCues)
-
             if ($hasComparison -and -not $hasDirectRecommendation) {
                 $result.Comparison = $true
                 [void]$result.Reasons.Add('戏谑或比较提及，不等同推荐')
@@ -126,7 +135,7 @@ function Get-SemanticAssessment([string]$Text, [string[]]$Names) {
                 $result.Negative = $true
                 [void]$result.Reasons.Add($(if ($hasIrony) { '含反讽或戏谑信号' } else { '含明确负向体验' }))
             }
-            $genuineRecommendation = ($hasDirectRecommendation -or $hasPositiveExperience -or $hasRepeatedBehavior -or $listScope) -and -not $hasNegative -and -not $hasIrony
+            $genuineRecommendation = ($hasDirectRecommendation -or $hasPositiveExperience -or $hasRepeatedBehavior -or $listScope -or $sentenceApprovesList) -and -not $hasNegative -and -not $hasIrony
             if ($hasComparison -and -not $hasDirectRecommendation) { $genuineRecommendation = $false }
             if ($genuineRecommendation) {
                 $result.Recommended = $true
@@ -196,7 +205,10 @@ if ($SemanticSelfTest) {
         @{ Text = '淘米水确实也不错'; Name = '淘米水'; Recommended = $true; Comparison = $false },
         @{ Text = '无锡人表示喜欢吃淘米水，那个红烧划水真的好吃'; Name = '淘米水'; Recommended = $true; Comparison = $false },
         @{ Text = '如果强制先吃那盘拼盘，那普通人还不如去吃汉巴味德'; Name = '汉巴味德'; Recommended = $false; Comparison = $true },
-        @{ Text = '我推荐不如多走几步学前街卜岩面馆点一桌'; Name = '卜岩面馆'; Recommended = $true; Comparison = $false }
+        @{ Text = '我推荐不如多走几步学前街卜岩面馆点一桌'; Name = '卜岩面馆'; Recommended = $true; Comparison = $false },
+        @{ Text = '综合个人最推荐福乐，小笼的话无夕和超王记'; Name = '超王记'; Recommended = $true; Comparison = $false },
+        @{ Text = '韩舍，五番亭，翼，一绪，这几个都可以'; Name = '五番亭'; Recommended = $true; Comparison = $false },
+        @{ Text = '韩舍，五番亭，这几个都不推荐'; Name = '五番亭'; Recommended = $false; Comparison = $false }
     )
     foreach ($case in $cases) {
         $actual = Get-SemanticAssessment -Text $case.Text -Names @($case.Name)
@@ -214,11 +226,53 @@ if ($SemanticSelfTest) {
 if (-not (Test-Path -LiteralPath $RawDirectory -PathType Container)) {
     throw "原始评论目录不存在：$RawDirectory"
 }
-foreach ($required in @($AliasCsv, $EvidenceCsv, $VerificationCsv, $SourceCsv, $SemanticRuleCsv)) {
+foreach ($required in @($AliasCsv, $EvidenceCsv, $VerificationCsv, $SourceCsv, $SemanticRuleCsv, $CandidateAuditCsv)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "缺少输入文件：$required" }
 }
 
 $dictionary = @(Import-Csv -LiteralPath $AliasCsv -Encoding UTF8)
+$candidateAudit = @(Import-Csv -LiteralPath $CandidateAuditCsv -Encoding UTF8)
+$acceptedAudit = @($candidateAudit | Where-Object { $_.审计结论 -in @('新增实体', '合并别名') })
+$auditCityByCanonical = @{}
+$auditAreaByCanonical = @{}
+
+foreach ($group in @($acceptedAudit | Group-Object 标准店名)) {
+    $cities = @($group.Group | ForEach-Object { [string]$_.城市 } | Where-Object { $_ } | Sort-Object -Unique)
+    $areas = @($group.Group | ForEach-Object { [string]$_.区县或县级市 } | Where-Object { $_ } | Sort-Object -Unique)
+    if ($cities.Count) { $auditCityByCanonical[[string]$group.Name] = $cities -join '／' }
+    if ($areas.Count) { $auditAreaByCanonical[[string]$group.Name] = $areas -join '／' }
+}
+
+$augmentedDictionary = New-Object 'System.Collections.Generic.List[object]'
+foreach ($entry in $dictionary) {
+    $canonical = [string]$entry.标准店名
+    $aliases = New-StringSet
+    foreach ($alias in @(([string]$entry.别名列表) -split '\|' | Where-Object { $_ })) { [void]$aliases.Add([string]$alias) }
+    foreach ($audit in @($acceptedAudit | Where-Object 标准店名 -eq $canonical)) { [void]$aliases.Add([string]$audit.候选写法) }
+    [void]$augmentedDictionary.Add([pscustomobject]@{
+        标准店名 = $canonical
+        别名列表 = (@($aliases | Sort-Object) -join '|')
+        精筛结论 = [string]$entry.精筛结论
+        类别 = [string]$entry.类别
+        备注 = [string]$entry.备注
+    })
+}
+foreach ($auditGroup in @($acceptedAudit | Group-Object 标准店名)) {
+    $canonical = [string]$auditGroup.Name
+    if (@($dictionary | Where-Object 标准店名 -eq $canonical).Count) { continue }
+    $aliases = New-StringSet
+    [void]$aliases.Add($canonical)
+    foreach ($audit in $auditGroup.Group) { [void]$aliases.Add([string]$audit.候选写法) }
+    $firstAudit = $auditGroup.Group | Select-Object -First 1
+    [void]$augmentedDictionary.Add([pscustomobject]@{
+        标准店名 = $canonical
+        别名列表 = (@($aliases | Sort-Object) -join '|')
+        精筛结论 = '保留候选'
+        类别 = [string]$firstAudit.类别
+        备注 = "候选人工审计新增：$([string]$firstAudit.备注)"
+    })
+}
+$dictionary = @($augmentedDictionary | ForEach-Object { $_ })
 $verification = @(Import-Csv -LiteralPath $VerificationCsv -Encoding UTF8)
 $semanticRuleByKey = @{}
 foreach ($rule in @(Import-Csv -LiteralPath $SemanticRuleCsv -Encoding UTF8)) {
@@ -257,8 +311,8 @@ function Add-SemanticAudit([string]$Canonical, [string]$Alias, $Comment, $Assess
             Canonical = $Canonical
             Aliases = New-StringSet
             Comment = $Comment
-            City = if ($null -eq $source) { '' } else { [string]$source.城市 }
-            Area = if ($null -eq $source) { '' } else { [string]$source.区县或县级市 }
+            City = if ($auditCityByCanonical.ContainsKey($Canonical)) { [string]$auditCityByCanonical[$Canonical] } elseif ($null -eq $source) { '' } else { [string]$source.城市 }
+            Area = if ($auditAreaByCanonical.ContainsKey($Canonical)) { [string]$auditAreaByCanonical[$Canonical] } elseif ($null -eq $source) { '' } else { [string]$source.区县或县级市 }
             Recommended = $false
             Comparison = $false
             Negative = $false
@@ -276,8 +330,13 @@ function Add-SemanticAudit([string]$Canonical, [string]$Alias, $Comment, $Assess
 }
 $commentsByKey = @{}
 $rawFileCount = 0
+$skippedRawFileCount = 0
 
 Get-ChildItem -LiteralPath $RawDirectory -Filter '*.json' -File | Sort-Object Name | ForEach-Object {
+    if (-not $sourceByBvid.ContainsKey($_.BaseName)) {
+        $skippedRawFileCount++
+        return
+    }
     $rawFileCount++
     $payload = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     foreach ($row in @($payload.评论)) {
@@ -441,8 +500,8 @@ $entityRows = foreach ($entry in $dictionary) {
         出现写法 = ([string]$entry.别名列表 -replace '\|', '／')
         评论提及数 = $aggregate.CommentKeys.Count
         涉及视频数 = $aggregate.Videos.Count
-        涉及城市 = (($aggregate.Cities | Sort-Object) -join '／')
-        涉及区县或县级市 = (($aggregate.Areas | Sort-Object) -join '／')
+        涉及城市 = $(if ($auditCityByCanonical.ContainsKey($canonical)) { [string]$auditCityByCanonical[$canonical] } else { (($aggregate.Cities | Sort-Object) -join '／') })
+        涉及区县或县级市 = $(if ($auditAreaByCanonical.ContainsKey($canonical)) { [string]$auditAreaByCanonical[$canonical] } else { (($aggregate.Areas | Sort-Object) -join '／') })
         有效推荐语境数 = $aggregate.RecommendationKeys.Count
         戏谑或比较语境数 = $aggregate.ComparisonKeys.Count
         负面语境数 = $aggregate.NegativeKeys.Count
@@ -501,6 +560,7 @@ $recommendedRows | Export-Csv -LiteralPath $RecommendedOutput -NoTypeInformation
 
 [pscustomobject]@{
     原始JSON文件数 = $rawFileCount
+    排除非本批次JSON文件数 = $skippedRawFileCount
     原始评论数 = @($commentsByKey.Values | Where-Object { $_.SourceType -eq '原始评论' }).Count
     新增历史精选证据数 = $selectedEvidenceAdded
     实际可扫描记录数 = $commentsByKey.Count

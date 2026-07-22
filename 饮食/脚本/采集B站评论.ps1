@@ -17,6 +17,7 @@ $requestHeaders = @{
     Referer = 'https://www.bilibili.com/'
     'User-Agent' = 'Mozilla/5.0'
 }
+$jsonSerializer = $null
 
 function Invoke-BiliApi {
     param([Parameter(Mandatory = $true)][string]$Uri)
@@ -25,7 +26,40 @@ function Invoke-BiliApi {
         Start-Sleep -Milliseconds $MinDelayMs
         try {
             $response = Invoke-RestMethod -Uri $Uri -Headers $requestHeaders -TimeoutSec 30
-            if ($response.code -ne 0) {
+            # Windows PowerShell 5.1 may leave unusually large JSON responses as
+            # strings even when Bilibili sends the correct application/json type.
+            if ($response -is [string]) {
+                try {
+                    $response = $response | ConvertFrom-Json
+                }
+                catch {
+                    # ConvertFrom-Json treats property names case-insensitively and
+                    # rejects real comments containing keys such as Apple Pay and
+                    # apple pay. JavaScriptSerializer preserves both spellings.
+                    if ($null -eq $jsonSerializer) {
+                        Add-Type -AssemblyName System.Web.Extensions
+                        $jsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+                        $jsonSerializer.MaxJsonLength = [int]::MaxValue
+                    }
+                    $response = $jsonSerializer.DeserializeObject($response)
+                }
+            }
+            $hasCode = $false
+            $responseCode = $null
+            if ($response -is [System.Collections.IDictionary]) {
+                $hasCode = $response.ContainsKey('code')
+                if ($hasCode) { $responseCode = $response['code'] }
+            }
+            else {
+                $codeProperty = $response.PSObject.Properties['code']
+                $hasCode = $null -ne $codeProperty
+                if ($hasCode) { $responseCode = $codeProperty.Value }
+            }
+            if (-not $hasCode) {
+                $responseType = if ($null -eq $response) { 'null' } else { $response.GetType().FullName }
+                throw "Bilibili API response did not include code ($responseType): $Uri"
+            }
+            if ($responseCode -ne 0) {
                 throw "Bilibili API code $($response.code): $($response.message)"
             }
             return $response

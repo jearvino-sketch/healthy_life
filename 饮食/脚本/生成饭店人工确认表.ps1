@@ -90,7 +90,11 @@ foreach ($entity in $entities) {
     $perCapitaValues = @($verifiedRows | ForEach-Object {
         if (-not [string]::IsNullOrWhiteSpace([string]$_.点评人均) -and [string]$_.点评人均 -ne '未获取') {
             $branch = if ([string]::IsNullOrWhiteSpace([string]$_.分店) -or [string]$_.分店 -eq '分店待确认') { '' } else { "$($_.分店)：" }
-            "$branch¥$($_.点评人均)"
+            "$branch 点评¥$($_.点评人均)".Trim()
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$_.高德人均) -and [string]$_.高德人均 -ne '未获取') {
+            $branch = if ([string]::IsNullOrWhiteSpace([string]$_.分店) -or [string]$_.分店 -eq '分店待确认') { '' } else { "$($_.分店)：" }
+            "$branch 高德¥$($_.高德人均)".Trim()
         }
     } | Where-Object { $_ } | Sort-Object -Unique)
     $perCapita = if ($perCapitaValues.Count) { $perCapitaValues -join '／' } else { '待平台核验' }
@@ -177,7 +181,7 @@ foreach ($cityName in @('无锡市', '苏州市', '常州市', '镇江市')) {
     [void]$lines.Add('| 饭店名 | 推荐菜 | 评分 | 人均消费 | 位置 | 置信度 | 评论原文 |')
     [void]$lines.Add('| --- | --- | --- | --- | --- | --- | --- |')
     if (-not $cityRows.Count) {
-        [void]$lines.Add('| 暂无可确认实体 | — | — | — | — | 待采集 | 新评论采集受 HTTP 412 限制，尚无该市评论实体。 |')
+        [void]$lines.Add('| 暂无可确认实体 | — | — | — | — | 待审计 | 当前精筛结果暂无该市实体；请复核评论采集状态和候选人工审计表。 |')
     }
     else {
         foreach ($row in $cityRows) {
