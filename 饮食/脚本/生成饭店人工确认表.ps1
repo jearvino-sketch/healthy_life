@@ -122,24 +122,23 @@ foreach ($entity in $entities) {
     $hasConcreteLocation = @($verifiedRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.地址) -and [string]$_.地址 -notin @('待确认', '分店待确认') }).Count -gt 0
     $hasPlatformEvidence = [string]$entity.平台匹配状态 -ne '待平台核验'
     if ($recommendationCount -eq 0) {
-        $confidence = '待确认（无有效推荐）'
+        $confidence = '待确认（0 条）'
         $confidenceRank = 0
     }
     elseif ($isAmbiguous) {
-        $confidence = "低（名称歧义；$recommendationCount 条推荐）"
+        $confidence = "低（$recommendationCount 条）"
         $confidenceRank = 1
     }
     elseif ($recommendationCount -ge 3 -and $hasConcreteLocation -and $hasPlatformEvidence) {
-        $confidence = "高（$recommendationCount 条推荐＋平台位置）"
+        $confidence = "高（$recommendationCount 条）"
         $confidenceRank = 3
     }
     elseif ($recommendationCount -ge 2 -or ($recommendationCount -ge 1 -and $hasConcreteLocation)) {
-        $locationSuffix = if ($hasConcreteLocation) { '＋位置线索' } else { '' }
-        $confidence = "中（$recommendationCount 条推荐$locationSuffix）"
+        $confidence = "中（$recommendationCount 条）"
         $confidenceRank = 2
     }
     else {
-        $confidence = "低（$recommendationCount 条推荐；平台待核验）"
+        $confidence = "低（$recommendationCount 条）"
         $confidenceRank = 1
     }
 
@@ -172,7 +171,7 @@ foreach ($entity in $entities) {
 $lines = New-Object 'System.Collections.Generic.List[string]'
 [void]$lines.Add('## 人工确认总表（按地级市）')
 [void]$lines.Add('')
-[void]$lines.Add('表内“评分／人均”只填写已取得的平台值；“待平台核验”表示当前没有可靠数据。置信度用于安排人工复核优先级：高＝至少 3 条有效推荐且已有平台位置，中＝至少 2 条推荐或已有具体位置，低＝仅 1 条推荐或名称有歧义，待确认＝没有有效推荐。评论原文优先选择点赞较高的有效推荐；没有有效推荐时保留一条非推荐原文用于排除判断。')
+[void]$lines.Add('表内“评分／人均”只填写已取得的平台值；“待平台核验”表示当前没有可靠数据。置信度用于安排人工复核优先级：高＝至少 3 条有效推荐且已有平台位置，中＝至少 2 条推荐或已有具体位置，低＝仅 1 条推荐或名称有歧义，待确认＝没有有效推荐；括号仅显示有效推荐条数。评论原文优先选择点赞较高的有效推荐；没有有效推荐时保留一条非推荐原文用于排除判断。')
 [void]$lines.Add('')
 foreach ($cityName in @('无锡市', '苏州市', '常州市', '镇江市')) {
     $cityRows = @($rows | Where-Object City -eq $cityName | Sort-Object @{ Expression = 'ConfidenceRank'; Descending = $true }, @{ Expression = 'RecommendationCount'; Descending = $true }, Name)
